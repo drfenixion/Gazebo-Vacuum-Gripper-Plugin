@@ -18,7 +18,7 @@ A system plugin for Gazebo Sim (formerly Ignition Gazebo) that simulates a sucti
 Add the following SDF snippet to your gripper model (e.g., inside the `<model>` tag):
 
 ```xml
-<plugin filename="libsuction_plugin.so" name="gz::sim::systems::SuctionPlugin">
+<plugin filename="libsuction_plugin.so" name="gz::sim::v8::systems::SuctionPlugin">
     <!-- Configuration Parameters -->
     <suction_topic>/suction/enable</suction_topic>   <!-- Topic to enable/disable suction -->
     <link_name>gripper_link</link_name>          <!-- Name of the link to attach to -->
@@ -67,13 +67,13 @@ Publish a boolean message to the configured `suction_topic` to enable or disable
 **Enable Suction:**
 
 ```bash
-ign topic -t /suction/enable -m gz.msgs.Boolean -p 'data: true'
+gz topic -t /suction/enable -m gz.msgs.Boolean -p 'data: true'
 ```
 
 **Disable Suction (Detach):**
 
 ```bash
-ign topic -t /suction/enable -m gz.msgs.Boolean -p 'data: false'
+gz topic -t /suction/enable -m gz.msgs.Boolean -p 'data: false'
 ```
 
 ## Building
@@ -88,7 +88,7 @@ make
 Ensure `GAZEBO_PLUGIN_PATH` includes your build directory:
 
 ```bash
-export GAZEBO_PLUGIN_PATH=$GAZEBO_PLUGIN_PATH:/path/to/your/build
+export GZ_SIM_SYSTEM_PLUGIN_PATH=$GZ_SIM_SYSTEM_PLUGIN_PATH::/path/to/your/build
 ```
 
 ## How It Works
