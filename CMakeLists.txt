@@ -24,6 +24,10 @@ add_library(suction_plugin SHARED
 # Set C++ standard
 set_property(TARGET suction_plugin PROPERTY CXX_STANDARD 17)
 
+# # Debug build: add debug symbols
+# set(CMAKE_BUILD_TYPE Debug)
+# add_compile_options(-g -O0)
+
 # Link with Gazebo Harmonic libraries
 target_link_libraries(suction_plugin
   gz-sim${GZ_SIM_VER}::gz-sim${GZ_SIM_VER}
