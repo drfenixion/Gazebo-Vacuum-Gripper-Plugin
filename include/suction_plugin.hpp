@@ -64,8 +64,25 @@ namespace gz
                 bool suctionActive{false};
                 std::string parentLinkName{""}; // Name of the link to attach to
                 
-                void FindTargetRadius(EntityComponentManager &_ecm);
+                void FindTargetRadius(const EntityComponentManager &_ecm);
                 void FindTargetContact(const EntityComponentManager &_ecm);
+
+                // Pending force commands computed in PostUpdate, applied in PreUpdate
+                struct WrenchCommand {
+                    Entity targetLink;
+                    Entity gripperLink;
+                    math::Vector3d force;
+                };
+                std::vector<WrenchCommand> pendingWrenchCommands;
+
+                // Links that need an AxisAlignedBox component created (deferred to PreUpdate)
+                std::vector<Entity> pendingAabbCreations;
+
+                // Helper: resolve the actual model when plugin is attached at world level
+                // (modelEntity == 1), then find and return the gripper link within that model.
+                // _resolvedModelEntity is set to the model entity that contains the gripper link.
+                Entity FindGripperLink(const EntityComponentManager &_ecm,
+                                       Entity &_resolvedModelEntity) const;
                 
                 gz::transport::Node node;
                 gz::transport::Node::Publisher publisher;

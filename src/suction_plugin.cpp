@@ -14,6 +14,9 @@
 #include <gz/sim/components/ParentEntity.hh>
 #include <gz/sim/components/DetachableJoint.hh>
 #include <gz/sim/components/Collision.hh>
+#include <gz/sim/components/AxisAlignedBox.hh>
+#include <gz/math/AxisAlignedBox.hh>
+
 #include <iostream>
 #include <memory>
 #include <vector>
@@ -133,34 +136,57 @@ void SuctionPlugin::Configure(const Entity &_entity,
 void SuctionPlugin::PreUpdate(const UpdateInfo &_info,
                               EntityComponentManager &_ecm)
 {
-    // 1. Logic for Suction (Sensing/Actuation)
-    if (this->suctionActive && this->attachedEntity == kNullEntity)
+    // 0. Create AxisAlignedBox components for links that lacked them during PostUpdate
+    for (const auto &link : this->pendingAabbCreations)
     {
-        if (this->useSuctionRadius)
-        {
-            this->FindTargetRadius(_ecm);
-        }
-        // Contact mode is handled in PostUpdate, which sets targetEntityToAttach
+        _ecm.CreateComponent(link, components::AxisAlignedBox());
     }
+    this->pendingAabbCreations.clear();
+
+    // 1. Apply pending wrench commands (computed in PostUpdate)
+    for (const auto &cmd : this->pendingWrenchCommands)
+    {
+        // Force on target link (pull toward gripper)
+        auto wrenchComp = _ecm.Component<components::ExternalWorldWrenchCmd>(cmd.targetLink);
+        if (!wrenchComp)
+        {
+            components::ExternalWorldWrenchCmd wrenchCmd;
+            msgs::Wrench wrenchMsg;
+            msgs::Set(wrenchMsg.mutable_force(), cmd.force);
+            wrenchCmd.Data() = wrenchMsg;
+            _ecm.CreateComponent(cmd.targetLink, wrenchCmd);
+        }
+        else
+        {
+            msgs::Set(wrenchComp->Data().mutable_force(), cmd.force);
+        }
+
+        // Equal and opposite force on gripper link
+        math::Vector3d gripperForce = -cmd.force;
+        auto gripperWrenchComp = _ecm.Component<components::ExternalWorldWrenchCmd>(cmd.gripperLink);
+        if (!gripperWrenchComp)
+        {
+            components::ExternalWorldWrenchCmd wrenchCmd;
+            msgs::Wrench wrenchMsg;
+            msgs::Set(wrenchMsg.mutable_force(), gripperForce);
+            wrenchCmd.Data() = wrenchMsg;
+            _ecm.CreateComponent(cmd.gripperLink, wrenchCmd);
+        }
+        else
+        {
+            msgs::Set(gripperWrenchComp->Data().mutable_force(), gripperForce);
+        }
+    }
+    this->pendingWrenchCommands.clear();
 
     // 2. Handle Attachment (Joint Creation)
     if (this->targetEntityToAttach != kNullEntity)
     {
         if (this->attachedEntity == kNullEntity) // Double check
         {
-             // std::cout << "PreUpdate: Attaching to target " << this->targetEntityToAttach << std::endl;
-             
-             // Find gripper link
-             Entity gripperLink = kNullEntity;
-             if (!this->parentLinkName.empty())
-             {
-                auto links = _ecm.ChildrenByComponents(this->modelEntity, components::Link());
-                for (const auto &link : links) {
-                    auto nameComp = _ecm.Component<components::Name>(link);
-                    if (nameComp && nameComp->Data() == this->parentLinkName) { gripperLink = link; break; }
-                }
-             }
-
+             // Find gripper link using the shared helper
+             Entity resolvedModel = kNullEntity;
+             Entity gripperLink = this->FindGripperLink(_ecm, resolvedModel);
 
              // Find target link
              Entity targetLink = kNullEntity;
@@ -197,34 +223,91 @@ void SuctionPlugin::PreUpdate(const UpdateInfo &_info,
 
 void SuctionPlugin::PostUpdate(const UpdateInfo &_info,
                                const EntityComponentManager &_ecm)
-{
+{   
+    // CONTACT MODE
     // Sensing: Only look for targets if suction is active and we are NOT attached
-    // AND we are in Contact Mode (Radius mode is done in PreUpdate)
+    // AND we are in Contact Mode
     if (this->suctionActive && this->attachedEntity == kNullEntity && !this->useSuctionRadius)
     {
         this->FindTargetContact(_ecm);
     }
+
+    // SUCTION MODE
+    // 1. Logic for Suction (Sensing/Actuation)
+    if (this->suctionActive && this->attachedEntity == kNullEntity)
+    {
+        if (this->useSuctionRadius)
+        {
+            this->FindTargetRadius(_ecm);
+        }
+        // Contact mode is handled above, which sets targetEntityToAttach
+    }
+
+    // Note: Attachment/Detachment joint creation and wrench application
+    // are performed in PreUpdate, where the ECM is non-const.
 }
 
-void SuctionPlugin::FindTargetRadius(EntityComponentManager &_ecm)
+Entity SuctionPlugin::FindGripperLink(const EntityComponentManager &_ecm,
+                                      Entity &_resolvedModelEntity) const
 {
-    // Find the gripper link
     Entity gripperLink = kNullEntity;
-    if (!this->parentLinkName.empty())
+    _resolvedModelEntity = this->modelEntity;
+
+    if (this->parentLinkName.empty())
+        return kNullEntity;
+
+    // If modelEntity is the world entity (ID 1), resolve the actual model
+    // that contains our parent link
+    Entity searchModel = this->modelEntity;
+    if (searchModel == 1)
     {
-        auto links = _ecm.ChildrenByComponents(this->modelEntity, components::Link());
-        for (const auto &link : links)
+        _ecm.Each<components::Model, components::Name>(
+            [&](const Entity &_modelEntity,
+                const components::Model *,
+                const components::Name *) -> bool
         {
-            auto nameComp = _ecm.Component<components::Name>(link);
-            if (nameComp && nameComp->Data() == this->parentLinkName) { gripperLink = link; break; }
+            auto links = _ecm.ChildrenByComponents(_modelEntity, components::Link());
+            for (const auto &link : links)
+            {
+                auto nameComp = _ecm.Component<components::Name>(link);
+                if (nameComp && nameComp->Data() == this->parentLinkName)
+                {
+                    searchModel = _modelEntity;
+                    _resolvedModelEntity = _modelEntity;
+                    return false;
+                }
+            }
+            return true;
+        });
+    }
+
+    // Find the gripper link within the (possibly resolved) model
+    auto links = _ecm.ChildrenByComponents(searchModel, components::Link());
+    for (const auto &link : links)
+    {
+        auto nameComp = _ecm.Component<components::Name>(link);
+        if (nameComp && nameComp->Data() == this->parentLinkName)
+        {
+            gripperLink = link;
+            break;
         }
     }
 
+    return gripperLink;
+}
+
+void SuctionPlugin::FindTargetRadius(const EntityComponentManager &_ecm)
+{
+    // Find the gripper link using the shared helper.
+    // resolvedModel is set to the actual model containing the gripper link,
+    // which may differ from this->modelEntity when the plugin is at world level.
+    Entity resolvedModel = kNullEntity;
+    Entity gripperLink = this->FindGripperLink(_ecm, resolvedModel);
 
     if (gripperLink == kNullEntity) return;
 
-    // Calculate Gripper Link World Pose
-    auto modelPose = _ecm.Component<components::Pose>(this->modelEntity);
+    // Calculate Gripper Link World Pose using the resolved model entity
+    auto modelPose = _ecm.Component<components::Pose>(resolvedModel);
     if (!modelPose) return;
     
     math::Pose3d gripperWorldPose = modelPose->Data();
@@ -234,6 +317,9 @@ void SuctionPlugin::FindTargetRadius(EntityComponentManager &_ecm)
     Entity nearestEntity = kNullEntity;
     double minDistance = std::numeric_limits<double>::max();
 
+    // Clear pending wrench commands from previous iteration
+    this->pendingWrenchCommands.clear();
+
     // Iterate all models to find candidates
     _ecm.Each<components::Name, components::Pose, components::Model>(
         [&](const Entity &_entity,
@@ -241,43 +327,105 @@ void SuctionPlugin::FindTargetRadius(EntityComponentManager &_ecm)
             const components::Pose *_pose,
             const components::Model *) -> bool
         {
-            if (_entity == this->modelEntity) return true;
+            if (_entity == resolvedModel) return true;
             if (_name->Data().find(this->filterName) == std::string::npos) return true;
 
-            double distance = this->CalculateDistance(gripperWorldPose, _pose->Data());
-            
-            if (distance <= this->suctionRadius)
+            // Compute distance from gripper position to the nearest face of the
+            // target model's link bounding boxes.
+            const math::Vector3d &gripperPos = gripperWorldPose.Pos();
+            const math::Pose3d &targetModelWorldPose = _pose->Data();
+            Entity bestLink = kNullEntity;
+            math::Vector3d bestSurfacePoint;
+            double distance = std::numeric_limits<double>::max();
+
+            // Iterate over the target model's links
+            auto targetLinks = _ecm.ChildrenByComponents(_entity, components::Link());
+            for (const auto &link : targetLinks)
             {
-                // --- APPLY SUCTION FORCE ---
-                // Find the first link of the target model to apply force to
-                auto targetLinks = _ecm.ChildrenByComponents(_entity, components::Link());
-                if (!targetLinks.empty())
+                // Get the AxisAlignedBox component of the link (stored in link's local frame)
+                auto aabbComp = _ecm.Component<components::AxisAlignedBox>(link);
+                if (!aabbComp)
                 {
-                    Entity targetLink = targetLinks[0];
-                    
-                    // Calculate vector from target to gripper
-                    math::Vector3d direction = gripperWorldPose.Pos() - _pose->Data().Pos();
-                    direction.Normalize();
-                    
-                    math::Vector3d force = direction * this->suctionForce;
-                    
-                    // Add External World Wrench
-                    auto wrenchComp = _ecm.Component<components::ExternalWorldWrenchCmd>(targetLink);
-                    if (!wrenchComp)
-                    {
-                        components::ExternalWorldWrenchCmd wrenchCmd;
-                        msgs::Wrench wrenchMsg;
-                        msgs::Set(wrenchMsg.mutable_force(), force);
-                        wrenchCmd.Data() = wrenchMsg;
-                        _ecm.CreateComponent(targetLink, wrenchCmd);
-                    }
-                    else
-                    {
-                        // Add to existing force (simplified, just overwriting for now as we are the suction)
-                        msgs::Set(wrenchComp->Data().mutable_force(), force);
-                    }
-                    // std::cout << "Applying suction force " << this->suctionForce << " to " << _name->Data() << std::endl;
+                    // Defer creation to PreUpdate (ECM is read-only here)
+                    this->pendingAabbCreations.push_back(link);
+                    continue;
                 }
+
+                const math::AxisAlignedBox &box = aabbComp->Data();
+
+                // Compute the link's world pose (model world pose * link relative pose)
+                auto linkRelativePoseComp = _ecm.Component<components::Pose>(link);
+                math::Pose3d linkWorldPose = targetModelWorldPose;
+                if (linkRelativePoseComp)
+                {
+                    linkWorldPose = targetModelWorldPose * linkRelativePoseComp->Data();
+                }
+
+                // Transform the AABB corners from link-local frame to world frame
+                math::Vector3d worldMin = linkWorldPose.Rot() * box.Min() + linkWorldPose.Pos();
+                math::Vector3d worldMax = linkWorldPose.Rot() * box.Max() + linkWorldPose.Pos();
+
+                // Extract world-space box extents for runtime debug inspection
+                double minX = worldMin.X();
+                double maxX = worldMax.X();
+                double minY = worldMin.Y();
+                double maxY = worldMax.Y();
+                double minZ = worldMin.Z();
+                double maxZ = worldMax.Z();
+
+                // Midpoints for face center calculation
+                double midX = (minX + maxX) / 2.0;
+                double midY = (minY + maxY) / 2.0;
+                double midZ = (minZ + maxZ) / 2.0;
+
+                // Compute center of each of the 6 faces of the AABB, find the closest
+                // to the gripper position
+                struct { double dist; math::Vector3d point; } bestFace;
+                bestFace.dist = std::numeric_limits<double>::max();
+
+                // X faces
+                auto checkFace = [&](const math::Vector3d &faceCenter) {
+                    double d = gripperPos.Distance(faceCenter);
+                    if (d < bestFace.dist) {
+                        bestFace.dist = d;
+                        bestFace.point = faceCenter;
+                    }
+                };
+                checkFace(math::Vector3d(minX, midY, midZ));
+                checkFace(math::Vector3d(maxX, midY, midZ));
+                checkFace(math::Vector3d(midX, minY, midZ));
+                checkFace(math::Vector3d(midX, maxY, midZ));
+                checkFace(math::Vector3d(midX, midY, minZ));
+                checkFace(math::Vector3d(midX, midY, maxZ));
+
+                double linkDist = bestFace.dist;
+                math::Vector3d bestSurfacePointLocal = bestFace.point;
+                if (linkDist < distance)
+                {
+                    distance = linkDist;
+                    bestLink = link;
+                    bestSurfacePoint = bestSurfacePointLocal;
+                }
+            }
+
+            if (distance <= this->suctionRadius && bestLink != kNullEntity)
+            {
+                // Direction from the target surface point toward the gripper
+                math::Vector3d direction = gripperPos - bestSurfacePoint;
+                direction.Normalize();
+
+                // Force pulling target toward gripper
+                math::Vector3d force = direction * this->suctionForce;
+
+                // Only log force application for newly captured targets (not already attached ones)
+                if (this->attachedEntity != _entity)
+                {
+                    std::cout << "Applying suction force " << this->suctionForce << " to " << _name->Data() << std::endl;
+                }
+
+                // Store pending wrench command for application in PreUpdate
+                this->pendingWrenchCommands.push_back(
+                    {bestLink, gripperLink, force});
 
                 // Check for attachment
                 if (distance < minDistance)
@@ -293,24 +441,17 @@ void SuctionPlugin::FindTargetRadius(EntityComponentManager &_ecm)
     if (nearestEntity != kNullEntity && minDistance < 0.02) 
     {
         this->targetEntityToAttach = nearestEntity;
-        // std::cout << "FindTargetRadius: Target " << nearestEntity << " in range (" << minDistance << "). Scheduling attachment." << std::endl;
+        std::cout << "FindTargetRadius: Target " << nearestEntity << " in range (" << minDistance << "). Scheduling attachment." << std::endl;
     }
 }
 
 void SuctionPlugin::FindTargetContact(const EntityComponentManager &_ecm)
 {
-    // Find the gripper link
-    Entity gripperLink = kNullEntity;
-    if (!this->parentLinkName.empty())
-    {
-        auto links = _ecm.ChildrenByComponents(this->modelEntity, components::Link());
-        for (const auto &link : links)
-        {
-            auto nameComp = _ecm.Component<components::Name>(link);
-            if (nameComp && nameComp->Data() == this->parentLinkName) { gripperLink = link; break; }
-        }
-    }
-
+    // Find the gripper link using the shared helper.
+    // _resolvedModelEntity holds the actual model containing the gripper link,
+    // which may differ from this->modelEntity when the plugin is at world level.
+    Entity resolvedModelEntity = kNullEntity;
+    Entity gripperLink = this->FindGripperLink(_ecm, resolvedModelEntity);
 
     if (gripperLink == kNullEntity) return;
 
@@ -335,8 +476,8 @@ void SuctionPlugin::FindTargetContact(const EntityComponentManager &_ecm)
                 Entity model2 = GetModelFromCollision(col2);
                 
                 Entity potentialTarget = kNullEntity;
-                if (model1 == this->modelEntity && model2 != kNullEntity) potentialTarget = model2;
-                else if (model2 == this->modelEntity && model1 != kNullEntity) potentialTarget = model1;
+                if (model1 == resolvedModelEntity && model2 != kNullEntity) potentialTarget = model2;
+                else if (model2 == resolvedModelEntity && model1 != kNullEntity) potentialTarget = model1;
                 
                 if (potentialTarget != kNullEntity)
                 {
@@ -344,7 +485,7 @@ void SuctionPlugin::FindTargetContact(const EntityComponentManager &_ecm)
                     if (nameComp && nameComp->Data().find(this->filterName) != std::string::npos)
                     {
                         this->targetEntityToAttach = potentialTarget;
-                        // std::cout << "FindTargetContact: Match found " << potentialTarget << ". Scheduling attachment." << std::endl;
+                        std::cout << "FindTargetContact: Match found " << potentialTarget << ". Scheduling attachment." << std::endl;
                         return; // Found one, that's enough
                     }
                 }
