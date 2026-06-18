@@ -419,7 +419,6 @@ void SuctionPlugin::FindTargetRadius(const EntityComponentManager &_ecm)
             {
                 // Direction from the target surface point toward the gripper
                 math::Vector3d direction = gripperPos - bestSurfacePoint;
-                direction.Normalize();
 
                 // Force pulling target toward gripper
                 math::Vector3d force = direction * this->suctionForce;
