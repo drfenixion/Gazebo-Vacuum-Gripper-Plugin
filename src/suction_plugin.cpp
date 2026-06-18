@@ -88,6 +88,13 @@ void SuctionPlugin::Configure(const Entity &_entity,
         this->useSuctionRadius = _sdf->Get<bool>("use_suction_radius");
         std::cout << "Use suction radius: " << (this->useSuctionRadius ? "TRUE" : "FALSE") << std::endl;
     }
+
+    // Read enable_joint_creation_at_attachment from SDF
+    if (_sdf->HasElement("enable_joint_creation_at_attachment"))
+    {
+        this->enableJointCreationAtAttachment = _sdf->Get<bool>("enable_joint_creation_at_attachment");
+        std::cout << "Enable joint creation at attachment: " << (this->enableJointCreationAtAttachment ? "TRUE" : "FALSE") << std::endl;
+    }
     
     if (_sdf->HasElement("suction_force"))
     {
@@ -180,7 +187,7 @@ void SuctionPlugin::PreUpdate(const UpdateInfo &_info,
     this->pendingWrenchCommands.clear();
 
     // 2. Handle Attachment (Joint Creation)
-    if (this->targetEntityToAttach != kNullEntity)
+    if (this->enableJointCreationAtAttachment && this->targetEntityToAttach != kNullEntity)
     {
         if (this->attachedEntity == kNullEntity) // Double check
         {
@@ -215,7 +222,7 @@ void SuctionPlugin::PreUpdate(const UpdateInfo &_info,
     }
 
     // 3. Handle Detachment
-    if (!this->suctionActive && this->attachedEntity != kNullEntity)
+    if (this->enableJointCreationAtAttachment && !this->suctionActive && this->attachedEntity != kNullEntity)
     {
         this->Detach(_ecm);
     }
@@ -418,7 +425,7 @@ void SuctionPlugin::FindTargetRadius(const EntityComponentManager &_ecm)
                 math::Vector3d force = direction * this->suctionForce;
 
                 // Only log force application for newly captured targets (not already attached ones)
-                if (this->attachedEntity != _entity)
+                if (this->targetEntityToAttach == kNullEntity && this->attachedEntity != _entity)
                 {
                     std::cout << "Applying suction force " << this->suctionForce << " to " << _name->Data() << std::endl;
                 }
@@ -441,7 +448,7 @@ void SuctionPlugin::FindTargetRadius(const EntityComponentManager &_ecm)
     if (nearestEntity != kNullEntity && minDistance < 0.02) 
     {
         this->targetEntityToAttach = nearestEntity;
-        std::cout << "FindTargetRadius: Target " << nearestEntity << " in range (" << minDistance << "). Scheduling attachment." << std::endl;
+        // std::cout << "FindTargetRadius: Target " << nearestEntity << " in range (" << minDistance << "). Scheduling attachment." << std::endl;
     }
 }
 

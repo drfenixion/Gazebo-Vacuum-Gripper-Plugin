@@ -60,6 +60,7 @@ namespace gz
                 double suctionRadius{0.1}; // Default 0.1m
                 double suctionForce{20.0}; // Default 20N
                 bool useSuctionRadius = false;
+                bool enableJointCreationAtAttachment{false}; // Whether joint creation on attachment is allowed (off by default)
                 std::string filterName;
                 bool suctionActive{false};
                 std::string parentLinkName{""}; // Name of the link to attach to
