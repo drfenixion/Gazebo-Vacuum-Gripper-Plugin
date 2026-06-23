@@ -385,25 +385,59 @@ void SuctionPlugin::FindTargetRadius(const EntityComponentManager &_ecm)
                 double midY = (minY + maxY) / 2.0;
                 double midZ = (minZ + maxZ) / 2.0;
 
-                // Compute center of each of the 6 faces of the AABB, find the closest
-                // to the gripper position
+                // Compute closest point on each of the 6 faces of the AABB
+                // to the gripper position, find the closest.
+                // This is better than using face centers because the gripper
+                // can be at any point on the surface, not just the center.
                 struct { double dist; math::Vector3d point; } bestFace;
                 bestFace.dist = std::numeric_limits<double>::max();
 
-                // X faces
-                auto checkFace = [&](const math::Vector3d &faceCenter) {
-                    double d = gripperPos.Distance(faceCenter);
+                auto checkFace = [&](double faceConst,
+                                     int axis,           // 0=X, 1=Y, 2=Z
+                                     const math::Vector3d &faceMin,
+                                     const math::Vector3d &faceMax) {
+                    // Project gripperPos onto the face plane, clamp to face boundaries
+                    math::Vector3d closest;
+                    if (axis == 0) {
+                        closest.X() = faceConst;
+                        closest.Y() = std::max(faceMin.Y(), std::min(faceMax.Y(), gripperPos.Y()));
+                        closest.Z() = std::max(faceMin.Z(), std::min(faceMax.Z(), gripperPos.Z()));
+                    } else if (axis == 1) {
+                        closest.X() = std::max(faceMin.X(), std::min(faceMax.X(), gripperPos.X()));
+                        closest.Y() = faceConst;
+                        closest.Z() = std::max(faceMin.Z(), std::min(faceMax.Z(), gripperPos.Z()));
+                    } else {
+                        closest.X() = std::max(faceMin.X(), std::min(faceMax.X(), gripperPos.X()));
+                        closest.Y() = std::max(faceMin.Y(), std::min(faceMax.Y(), gripperPos.Y()));
+                        closest.Z() = faceConst;
+                    }
+                    double d = gripperPos.Distance(closest);
                     if (d < bestFace.dist) {
                         bestFace.dist = d;
-                        bestFace.point = faceCenter;
+                        bestFace.point = closest;
                     }
                 };
-                checkFace(math::Vector3d(minX, midY, midZ));
-                checkFace(math::Vector3d(maxX, midY, midZ));
-                checkFace(math::Vector3d(midX, minY, midZ));
-                checkFace(math::Vector3d(midX, maxY, midZ));
-                checkFace(math::Vector3d(midX, midY, minZ));
-                checkFace(math::Vector3d(midX, midY, maxZ));
+                // X faces (normal along X axis)
+                checkFace(minX, 0,
+                          math::Vector3d(minX, minY, minZ),
+                          math::Vector3d(minX, maxY, maxZ));
+                checkFace(maxX, 0,
+                          math::Vector3d(maxX, minY, minZ),
+                          math::Vector3d(maxX, maxY, maxZ));
+                // Y faces (normal along Y axis)
+                checkFace(minY, 1,
+                          math::Vector3d(minX, minY, minZ),
+                          math::Vector3d(maxX, minY, maxZ));
+                checkFace(maxY, 1,
+                          math::Vector3d(minX, maxY, minZ),
+                          math::Vector3d(maxX, maxY, maxZ));
+                // Z faces (normal along Z axis)
+                checkFace(minZ, 2,
+                          math::Vector3d(minX, minY, minZ),
+                          math::Vector3d(maxX, maxY, minZ));
+                checkFace(maxZ, 2,
+                          math::Vector3d(minX, minY, maxZ),
+                          math::Vector3d(maxX, maxY, maxZ));
 
                 double linkDist = bestFace.dist;
                 math::Vector3d bestSurfacePointLocal = bestFace.point;
